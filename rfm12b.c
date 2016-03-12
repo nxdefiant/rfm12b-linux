@@ -103,8 +103,11 @@ MODULE_PARM_DESC(jee_autoack,
 #define RFM69_RSSIVAL_SEND_MIN      (-82)
 
 #define RF_MAX_DATA_LEN    66
-#define RF_EXTRA_LEN       4 // 4 : 1 byte hdr, 1 byte len, 2 bytes crc16 (see JeeLib)
+#define NUM_HEADER_BYTES   2
+#define NUM_CRC_BYTES      2
+#define RF_EXTRA_LEN       (NUM_HEADER_BYTES+NUM_CRC_BYTES) // 4 : 1 byte hdr, 1 byte len, 2 bytes crc16 (see JeeLib)
 #define RF_MAX_LEN         (RF_MAX_DATA_LEN+RF_EXTRA_LEN)
+#define LEN_BYTE_POS       1
 
 #define OPEN_WAIT_MILLIS   (50)
 
@@ -874,7 +877,7 @@ rfm_finish_sending(struct rfm12_data* rfm12, int success)
 	rfm_update_rxtx_watchdog(rfm12, 1);
 
 	if (success) {
-		len = rfm12->out_buf[1] + RF_EXTRA_LEN;
+		len = rfm12->out_buf[LEN_BYTE_POS] + RF_EXTRA_LEN;
 
 		memmove(rfm12->out_buf,
 				rfm12->out_buf + len,
@@ -1358,7 +1361,7 @@ rfm12_send_spi_completion_handler(void *arg)
 			switch(rfm12->state) {
 				case RFM12_STATE_SEND_PRE1:
 					rfm12->out_buf_pos = rfm12->out_buf;
-					rfm12->out_cur_num_bytes = rfm12->out_buf_pos[1] + RF_EXTRA_LEN;
+					rfm12->out_cur_num_bytes = rfm12->out_buf_pos[LEN_BYTE_POS] + RF_EXTRA_LEN;
 				case RFM12_STATE_SEND_PRE2:
 				case RFM12_STATE_SEND_PRE3:
 				case RFM12_STATE_SEND_SYN1:
@@ -1863,7 +1866,7 @@ rfm69_set_mode_transmitter_callback(void* arg)
 	rfm_spi_completion_common(spi_msg);
 
 	rfm12->out_buf_pos = rfm12->out_buf;
-	rfm12->out_cur_num_bytes = rfm12->out_buf_pos[1] + RF_EXTRA_LEN;
+	rfm12->out_cur_num_bytes = rfm12->out_buf_pos[LEN_BYTE_POS] + RF_EXTRA_LEN;
 	rfm12->state = RFM12_STATE_SEND;
 
 	rfm_update_rxtx_watchdog(rfm12, 0);
@@ -2159,7 +2162,7 @@ rfm_filop_read(struct file* filp, char __user *buf, size_t count, loff_t* f_pos)
 
 	spin_lock_irqsave(&rfm12->lock, flags);
 
-	length = *(rfm12->in_buf + 1) + 2;
+	length = *(rfm12->in_buf + LEN_BYTE_POS) + NUM_HEADER_BYTES;
 
 	// if we are not in jee-compatible mode, we dont pass JeeLib hdr/len
 	// bytes to userspace.
@@ -2167,8 +2170,8 @@ rfm_filop_read(struct file* filp, char __user *buf, size_t count, loff_t* f_pos)
 		offset = 0;
 		bytes_to_copy = (count > length) ? length : count;
 	} else {
-		offset = 2;
-		bytes_to_copy = (count > length-2) ? length-2 : count;
+		offset = NUM_HEADER_BYTES;
+		bytes_to_copy = (count > length-NUM_HEADER_BYTES) ? length-NUM_HEADER_BYTES : count;
 	}
 
 	spin_unlock_irqrestore(&rfm12->lock, flags);
@@ -2177,7 +2180,7 @@ rfm_filop_read(struct file* filp, char __user *buf, size_t count, loff_t* f_pos)
 
 	spin_lock_irqsave(&rfm12->lock, flags);
 
-	mmovelen = length + 2;
+	mmovelen = length + NUM_CRC_BYTES;
 	if (mmovelen > 0)
 		memmove(rfm12->in_buf,
 				rfm12->in_buf + mmovelen,
@@ -2202,14 +2205,14 @@ rfm_filop_write(struct file *filp, const char __user *buf,
 	if (INTERPRETS_JEENODE_PROTOCOL(rfm12)) {
 		offset = 0;
 	} else {
-		offset = 2;
+		offset = NUM_HEADER_BYTES;
 	}
 
 	if (count < offset)
 		return -EINVAL;
 
 	bytes_to_copy =
-		(RF_MAX_DATA_LEN+2-offset < count) ? RF_MAX_DATA_LEN+2-offset : count;
+		(RF_MAX_DATA_LEN+NUM_HEADER_BYTES-offset < count) ? RF_MAX_DATA_LEN+NUM_HEADER_BYTES-offset : count;
 
 	if (!CAN_SEND_BYTES_OF_LENGTH(bytes_to_copy))
 		wait_event_interruptible(rfm12->wait_write,
@@ -2231,13 +2234,13 @@ rfm_filop_write(struct file *filp, const char __user *buf,
 		// header: we keep this at 0, meaning "broadcast from node 0" in jeenode speak
 		//   that way. any flow control etc... has to be implemented by the client app,
 		//   but we're still compatible with the jeenode format.
-		*rfm12->out_cur_end++ = 0;         // hdr
-		*rfm12->out_cur_end++ = (u8)copied;   // len
+		*rfm12->out_cur_end = 0;         // hdr
+		*(rfm12->out_cur_end+LEN_BYTE_POS) = (u8)copied;   // len
 	}
 
-	rfm_apply_crc16(rfm12, rfm12->out_cur_end-2, copied+offset);
+	rfm_apply_crc16(rfm12, rfm12->out_cur_end, copied+offset);
 
-	rfm12->out_cur_end += copied + offset;
+	rfm12->out_cur_end += copied + offset + NUM_CRC_BYTES;
 
 	if (RFM12_STATE_IDLE == rfm12->state) {
 		rfm_begin_sending_or_receiving(rfm12);
