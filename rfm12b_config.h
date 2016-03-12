@@ -36,7 +36,7 @@
   Beaglebone Black  3               platform/plat_beaglebone.h
   Raspberry Pi 2    4               platform/plat_raspberrypi.h
 */
-#define RFM12B_BOARD       0 
+#define RFM12B_BOARD       3
 
 /*
   The name of the driver within the kernel (e.g. shows up in logs, etc...)
@@ -72,7 +72,7 @@
      1 ... 433mhz
      2 ... 868mhz
 */
-#define RFM12B_DEFAULT_BAND_ID   2
+#define RFM12B_DEFAULT_BAND_ID   1
 
 /*
   The default bit rate to use for each RFM12B board. You can change the

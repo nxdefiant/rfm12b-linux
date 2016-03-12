@@ -102,12 +102,12 @@ MODULE_PARM_DESC(jee_autoack,
 #define RFM69_RSSIVAL_TO_DBM(val)   (((int)(-(val)))>>1)
 #define RFM69_RSSIVAL_SEND_MIN      (-82)
 
-#define RF_MAX_DATA_LEN    66
-#define NUM_HEADER_BYTES   2
+#define RF_MAX_DATA_LEN    128
+#define NUM_HEADER_BYTES   1
 #define NUM_CRC_BYTES      2
 #define RF_EXTRA_LEN       (NUM_HEADER_BYTES+NUM_CRC_BYTES) // 4 : 1 byte hdr, 1 byte len, 2 bytes crc16 (see JeeLib)
 #define RF_MAX_LEN         (RF_MAX_DATA_LEN+RF_EXTRA_LEN)
-#define LEN_BYTE_POS       1
+#define LEN_BYTE_POS       0
 
 #define OPEN_WAIT_MILLIS   (50)
 
@@ -627,12 +627,12 @@ rfm_consume_received_byte(struct rfm12_data* rfm12, u8 recvd_byte)
 			*rfm12->in_buf_pos++ = recvd_byte;
 
 			if (0 == rfm12->in_cur_num_bytes)
-				rfm12->crc16 = rfm_crc16_update(~0, rfm12->group_id);
-
-			rfm12->crc16 = rfm_crc16_update(rfm12->crc16, recvd_byte);
+				rfm12->crc16 = rfm_crc16_update(0, recvd_byte);
+			else if (rfm12->in_cur_num_bytes <= *rfm12->in_cur_len_pos)
+				rfm12->crc16 = rfm_crc16_update(rfm12->crc16, recvd_byte);
 		}
 
-		if (1 == rfm12->in_cur_num_bytes) {
+		if (0 == rfm12->in_cur_num_bytes) {
 			rfm12->in_cur_len_pos = rfm12->in_buf_pos-1;
 
 			if (*rfm12->in_cur_len_pos > RF_MAX_DATA_LEN)
@@ -641,10 +641,11 @@ rfm_consume_received_byte(struct rfm12_data* rfm12, u8 recvd_byte)
 				*rfm12->in_cur_len_pos = 0;
 		}
 
-		if (1 < rfm12->in_cur_num_bytes) {
-			// +2 ... those are the CRC bytes, +2 for header & length
-			if (rfm12->in_cur_num_bytes+1 >= (*rfm12->in_cur_len_pos + RF_EXTRA_LEN) ||
-					rfm12->in_cur_num_bytes+1 >= (RF_MAX_LEN)) {
+		if (0 < rfm12->in_cur_num_bytes) {
+			// +2 ... those are the CRC bytes, +1 for header & length
+			if (rfm12->in_cur_num_bytes+1 >= (*rfm12->in_cur_len_pos + RF_EXTRA_LEN) || rfm12->in_cur_num_bytes+1 >= (RF_MAX_LEN)) {
+				rfm12->crc16 = rfm_crc16_update(rfm12->crc16, *(rfm12->in_buf_pos-1));
+				rfm12->crc16 = rfm_crc16_update(rfm12->crc16, *(rfm12->in_buf_pos-2));
 				(void)rfm_finish_receiving(rfm12, 0);
 				packet_finished = 1;
 			}
@@ -777,9 +778,9 @@ rfm_update_rxtx_watchdog(struct rfm12_data* rfm12, u8 cancelTimer)
 	static void
 rfm_apply_crc16(struct rfm12_data* rfm12, unsigned char* ptr, unsigned len)
 {
-	u16 i, crc16 = ~0;
-	if (0 != rfm12->group_id)
-		crc16 = rfm_crc16_update(~0, rfm12->group_id);
+	u16 i, crc16 = 0;
+	//if (0 != rfm12->group_id)
+	//	crc16 = rfm_crc16_update(0, rfm12->group_id);
 	for (i=0; i<len; i++)
 		crc16 = rfm_crc16_update(crc16, ptr[i]);
 
@@ -788,19 +789,20 @@ rfm_apply_crc16(struct rfm12_data* rfm12, unsigned char* ptr, unsigned len)
 	ptr[len+1] = (crc16 >> 8) & 0xFF;
 }
 
-	static u16
-rfm_crc16_update(u16 crc, u8 b)
+static u16 rfm_crc16_update(u16 crc, u8 serialData)
 {
-	int i=0;
+        u16 tmp;
+        u8 j;
 
-	crc ^= b;
-	for (i = 0; i < 8; ++i) {
-		if (crc & 1)
-			crc = (crc >> 1) ^ 0xa001;
-		else
-			crc = (crc >> 1);
-	}
-
+	tmp = serialData << 8;
+        for (j=0; j<8; j++)
+	{
+                if((crc^tmp) & 0x8000)
+			crc = (crc<<1) ^ 0x1021;
+                else
+			crc = crc << 1;
+                tmp = tmp << 1;
+        }
 	return crc;
 }
 
@@ -1627,11 +1629,11 @@ rfm69_setup(struct rfm12_data* rfm12)
 		0x02, 0x00, // DataModul = packet mode, fsk
 		0x03, 0x00, // BitRateMsb
 		0x04, 0x00, // BitRateLsb
-		0x05, 0x05, // FdevMsb = 90 KHz
-		0x06, 0xC3, // FdevLsb = 90 KHz
+		0x05, 0x06, // FdevMsb = 105 KHz
+		0x06, 0xB9, // FdevLsb = 105 KHz
 		0x0B, 0x20, // AfcCtrl, afclowbetaon
-		0x18, 0x08, // LNA gain selected by AGC loop, 50 ohm load
-		0x19, 0x42, // RxBw ...
+		0x18, 0x02, // LNA gain -6dB, 50 ohm load
+		0x19, 0x49, // RxBw = 200kHz
 		0x1E, 0x2C, // FeiStart, AfcAutoclearOn, AfcAutoOn
 		0x25, 0x80, // DioMapping1 = SyncAddress (Rx)
 		0x2E, 0x88, // SyncConfig = sync on, sync size = 2
@@ -1646,6 +1648,7 @@ rfm69_setup(struct rfm12_data* rfm12)
 		0x07, 0x00, // freq1
 		0x08, 0x00, // freq2
 		0x09, 0x00, // freq3
+		0x29, 0x9e, // RSSI threshold = -79dBm
 		0
 	};
 
@@ -1676,6 +1679,7 @@ rfm69_setup(struct rfm12_data* rfm12)
 	rf69_freq = rf69_freq * 10000000L + rfm12->band_id * 2500L * 1600UL;
 	rf69_freq = ((rf69_freq << 2) / (32000000L >> 11)) << 6;
 
+	rf69_freq = 0x6c7ae1;
 	cmd_ptr[41] = (rf69_freq >> 16) & 0xff;
 	cmd_ptr[43] = (rf69_freq >> 8)  & 0xff;
 	cmd_ptr[45] = (rf69_freq)       & 0xff;
@@ -1815,8 +1819,8 @@ rfm69_trysend_completion_handler(void *arg)
 
 	rssi = RFM69_RSSIVAL_TO_DBM(spi_msg->spi_rx[1]);
 
-	if ((RFM12_STATE_IDLE == rfm12->state || RFM12_STATE_LISTEN == rfm12->state) &&
-			rssi < RFM69_RSSIVAL_SEND_MIN) {
+	if ((RFM12_STATE_IDLE == rfm12->state || RFM12_STATE_LISTEN == rfm12->state) /*&&
+			rssi < RFM69_RSSIVAL_SEND_MIN*/) {
 		rfm12->state = RFM12_STATE_SEND_PRE1;
 
 		rfm69_set_mode(rfm12, RFM69_MODE_STANDBY, NULL);
@@ -2234,7 +2238,7 @@ rfm_filop_write(struct file *filp, const char __user *buf,
 		// header: we keep this at 0, meaning "broadcast from node 0" in jeenode speak
 		//   that way. any flow control etc... has to be implemented by the client app,
 		//   but we're still compatible with the jeenode format.
-		*rfm12->out_cur_end = 0;         // hdr
+		//*rfm12->out_cur_end = 0;         // hdr
 		*(rfm12->out_cur_end+LEN_BYTE_POS) = (u8)copied;   // len
 	}
 
